@@ -1,66 +1,45 @@
-from flask import Flask, render_template_string
-import paho.mqtt.client as mqtt
+import Adafruit_DHT
+import spidev
+import time
+import requests
 import json
 
-app = Flask(_name_)
 
-latest_data = {
-    "temperature": "N/A",
-    "humidity": "N/A",
-    "gas": "N/A",
-    "soil": "N/A"
-}
+DHT_SENSOR = Adafruit_DHT.DHT11
+DHT_PIN = 4
 
-# MQTT Setup
-broker = "test.mosquitto.org"
-port = 1883
-topic = "agrobotics/sensors"
+# SPI for MCP3008 (for MQ and soil sensors)
+spi = spidev.SpiDev()
+spi.open(0, 0)
+spi.max_speed_hz = 1350000
 
-def on_connect(client, userdata, flags, rc):
-    print("✅ Connected to MQTT Broker")
-    client.subscribe(topic)
+def read_adc(channel):
+    adc = spi.xfer2([1, (8 + channel) << 4, 0])
+    return ((adc[1] & 3) << 8) + adc[2]
 
-def on_message(client, userdata, msg):
-    global latest_data
-    try:
-        latest_data = json.loads(msg.payload.decode())
-        print("Received:", latest_data)
-    except Exception as e:
-        print("Error decoding JSON:", e)
+# Your Raspberry Pi IP
+SERVER_URL = "http://192.168.144.78:5000/data"
 
-client = mqtt.Client()
-client.on_connect = on_connect
-client.on_message = on_message
-client.connect(broker, port, 60)
-client.loop_start()
+while True:
+    humidity, temperature = Adafruit_DHT.read_retry(DHT_SENSOR, DHT_PIN)
+    mq2 = read_adc(0)
+    mq7 = read_adc(1)
+    soil = read_adc(2)
 
-# HTML Template
-html = '''
-<html>
-<head>
-    <title>Sensor Dashboard</title>
-    <meta http-equiv="refresh" content="5">
-    <style>
-        body { font-family: Arial; text-align: center; padding-top: 50px; }
-        .card { display: inline-block; padding: 30px; background: #f4f4f4; border-radius: 10px; box-shadow: 0 0 10px #ccc; }
-        h2 { color: #444; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h2>🌡 Temperature: {{ temperature }} °C</h2>
-        <h2>💧 Humidity: {{ humidity }} %</h2>
-        <h2>🧪 Gas: {{ gas }}</h2>
-        <h2>🌱 Soil: {{ soil }}</h2>
-        <p>Refreshes every 5 seconds</p>
-    </div>
-</body>
-</html>
-'''
+    if humidity is not None and temperature is not None:
+        data = {
+            'temperature': temperature,
+            'humidity': humidity,
+            'mq2': mq2,
+            'mq7': mq7,
+            'soil': soil
+        }
+        try:
+            response = requests.post(SERVER_URL, json=data)
+            print(f" Sent to server: {data}")
+        except Exception as e:
+            print(f"Error: {e}")
+    else:
+        print("DHT11 Read Error")
 
-@app.route('/')
-def index():
-    return render_template_string(html, **latest_data)
-
-if _name_ == '_main_':
-    app.run(host='0.0.0.0', port=5000)
+    time.sleep(5)
